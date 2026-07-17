@@ -1,0 +1,21 @@
+TOPLEVEL_LANG := verilog
+TOPLEVEL := fifo
+COCOTB_TEST_MODULES := unit.test_fifo
+
+FIFO_WIDTH ?= 16
+FIFO_DEPTH ?= 3
+export FIFO_WIDTH
+BUILD_VARIANT := width_$(FIFO_WIDTH)_depth_$(FIFO_DEPTH)
+export FIFO_DEPTH
+
+VERILOG_SOURCES := \
+	$(ROOT_DIR)/rtl/noc_pkg.sv \
+	$(ROOT_DIR)/rtl/fifo.sv
+
+ifeq ($(SIM),icarus)
+COMPILE_ARGS += -P$(TOPLEVEL).WIDTH=$(FIFO_WIDTH)
+COMPILE_ARGS += -P$(TOPLEVEL).DEPTH=$(FIFO_DEPTH)
+else ifeq ($(SIM),verilator)
+COMPILE_ARGS += -GWIDTH=$(FIFO_WIDTH)
+COMPILE_ARGS += -GDEPTH=$(FIFO_DEPTH)
+endif
