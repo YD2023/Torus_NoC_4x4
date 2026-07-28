@@ -53,4 +53,17 @@ module route_compute_torus #(
       vc_o = {{(VC_W-1){1'b0}}, 1'b1};
     end
   end
+
+  initial begin
+    if ((X_DIM <= 0) || (Y_DIM <= 0)) begin
+      $fatal(1, "route_compute_torus dimensions must be greater than zero");
+    end
+    if ((COORD_W <= 0) || ((1 << COORD_W) < X_DIM) ||
+        ((1 << COORD_W) < Y_DIM)) begin
+      $fatal(1, "route_compute_torus COORD_W cannot encode all coordinates");
+    end
+    if (VC_W != 1) begin
+      $fatal(1, "route_compute_torus MVP requires VC_W=1");
+    end
+  end
 endmodule

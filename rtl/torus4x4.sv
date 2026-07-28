@@ -1,58 +1,105 @@
 import noc_pkg::*;
 
-module torus4x4 #(
+module torus_local_link_adapter #(
   parameter int FLIT_W = noc_pkg::NOC_FLIT_W,
   parameter int VC_W   = noc_pkg::NOC_VC_W
+) (
+  noc_link_if.sink   local_i,
+  noc_link_if.source local_o,
+  output logic                 local_in_valid_o,
+  input  logic                 local_in_ready_i,
+  output logic [FLIT_W-1:0]    local_in_flit_o,
+  output logic [VC_W-1:0]      local_in_vc_o,
+  input  logic                 local_out_valid_i,
+  output logic                 local_out_ready_o,
+  input  logic [FLIT_W-1:0]    local_out_flit_i,
+  input  logic [VC_W-1:0]      local_out_vc_i
+);
+  assign local_in_valid_o = local_i.valid;
+  assign local_in_flit_o = local_i.flit;
+  assign local_in_vc_o = local_i.vc_id;
+  assign local_i.ready = local_in_ready_i;
+
+  assign local_o.valid = local_out_valid_i;
+  assign local_o.flit = local_out_flit_i;
+  assign local_o.vc_id = local_out_vc_i;
+  assign local_out_ready_o = local_o.ready;
+endmodule
+
+module torus4x4 #(
+  parameter int FLIT_W = noc_pkg::NOC_FLIT_W,
+  parameter int VC_W      = noc_pkg::NOC_VC_W,
+  parameter int FIFO_D    = 4,
+  parameter int COUNTER_W = 32
 ) (
   input logic clk,
   input logic rst_n,
 
   noc_link_if.sink   local_i [noc_pkg::NOC_NUM_NODES],
-  noc_link_if.source local_o [noc_pkg::NOC_NUM_NODES]
+  noc_link_if.source local_o [noc_pkg::NOC_NUM_NODES],
+
+  output logic [noc_pkg::NOC_NUM_NODES*noc_pkg::NOC_NUM_PORTS*
+                noc_pkg::NOC_NUM_VCS-1:0] protocol_error_o,
+  output logic [noc_pkg::NOC_NUM_NODES*noc_pkg::NOC_NUM_PORTS*COUNTER_W-1:0]
+      flits_received_o,
+  output logic [noc_pkg::NOC_NUM_NODES*noc_pkg::NOC_NUM_PORTS*COUNTER_W-1:0]
+      flits_sent_o,
+  output logic [noc_pkg::NOC_NUM_NODES*noc_pkg::NOC_NUM_PORTS*COUNTER_W-1:0]
+      blocked_empty_o,
+  output logic [noc_pkg::NOC_NUM_NODES*noc_pkg::NOC_NUM_PORTS*COUNTER_W-1:0]
+      blocked_backpressure_o,
+  output logic [noc_pkg::NOC_NUM_NODES*COUNTER_W-1:0] packets_ejected_o
 );
-  noc_link_if #(.FLIT_W(FLIT_W), .VC_W(VC_W)) east_west [noc_pkg::NOC_NUM_NODES] ();
-  noc_link_if #(.FLIT_W(FLIT_W), .VC_W(VC_W)) west_east [noc_pkg::NOC_NUM_NODES] ();
-  noc_link_if #(.FLIT_W(FLIT_W), .VC_W(VC_W)) south_north [noc_pkg::NOC_NUM_NODES] ();
-  noc_link_if #(.FLIT_W(FLIT_W), .VC_W(VC_W)) north_south [noc_pkg::NOC_NUM_NODES] ();
+  localparam int NUM_NODES = noc_pkg::NOC_NUM_NODES;
 
-  for (genvar x = 0; x < noc_pkg::NOC_X_DIM; x++) begin : gen_x
-    for (genvar y = 0; y < noc_pkg::NOC_Y_DIM; y++) begin : gen_y
-      localparam int EAST_X  = (x + 1) % noc_pkg::NOC_X_DIM;
-      localparam int WEST_X  = (x + noc_pkg::NOC_X_DIM - 1) % noc_pkg::NOC_X_DIM;
-      localparam int SOUTH_Y = (y + 1) % noc_pkg::NOC_Y_DIM;
-      localparam int NORTH_Y = (y + noc_pkg::NOC_Y_DIM - 1) % noc_pkg::NOC_Y_DIM;
-      localparam int NODE_IDX = (x * noc_pkg::NOC_Y_DIM) + y;
-      localparam int EAST_IDX = (EAST_X * noc_pkg::NOC_Y_DIM) + y;
-      localparam int WEST_IDX = (WEST_X * noc_pkg::NOC_Y_DIM) + y;
-      localparam int SOUTH_IDX = (x * noc_pkg::NOC_Y_DIM) + SOUTH_Y;
-      localparam int NORTH_IDX = (x * noc_pkg::NOC_Y_DIM) + NORTH_Y;
+  logic [NUM_NODES-1:0]        core_local_in_valid;
+  logic [NUM_NODES-1:0]        core_local_in_ready;
+  logic [NUM_NODES*FLIT_W-1:0] core_local_in_flit;
+  logic [NUM_NODES*VC_W-1:0]   core_local_in_vc;
+  logic [NUM_NODES-1:0]        core_local_out_valid;
+  logic [NUM_NODES-1:0]        core_local_out_ready;
+  logic [NUM_NODES*FLIT_W-1:0] core_local_out_flit;
+  logic [NUM_NODES*VC_W-1:0]   core_local_out_vc;
 
-      router #(
-        .X_COORD(x),
-        .Y_COORD(y),
-        .FLIT_W(FLIT_W),
-        .VC_W(VC_W)
-      ) u_router (
-        .clk(clk),
-        .rst_n(rst_n),
-
-        .north_i(south_north[NORTH_IDX]),
-        .north_o(north_south[NODE_IDX]),
-        .south_i(north_south[SOUTH_IDX]),
-        .south_o(south_north[NODE_IDX]),
-        .east_i(west_east[EAST_IDX]),
-        .east_o(east_west[NODE_IDX]),
-        .west_i(east_west[WEST_IDX]),
-        .west_o(west_east[NODE_IDX]),
-        .local_i(local_i[NODE_IDX]),
-        .local_o(local_o[NODE_IDX]),
-
-        .flits_received_o(),
-        .flits_sent_o(),
-        .packets_ejected_o()
-      );
-    end
+  for (genvar node = 0; node < NUM_NODES; node++) begin : gen_local_adapter
+    torus_local_link_adapter #(
+      .FLIT_W(FLIT_W),
+      .VC_W(VC_W)
+    ) u_adapter (
+      .local_i(local_i[node]),
+      .local_o(local_o[node]),
+      .local_in_valid_o(core_local_in_valid[node]),
+      .local_in_ready_i(core_local_in_ready[node]),
+      .local_in_flit_o(core_local_in_flit[node*FLIT_W +: FLIT_W]),
+      .local_in_vc_o(core_local_in_vc[node*VC_W +: VC_W]),
+      .local_out_valid_i(core_local_out_valid[node]),
+      .local_out_ready_o(core_local_out_ready[node]),
+      .local_out_flit_i(core_local_out_flit[node*FLIT_W +: FLIT_W]),
+      .local_out_vc_i(core_local_out_vc[node*VC_W +: VC_W])
+    );
   end
 
-  // TODO: expose optional network-level debug counters after router counters are finalized.
+  torus4x4_core #(
+    .FLIT_W(FLIT_W),
+    .VC_W(VC_W),
+    .FIFO_D(FIFO_D),
+    .COUNTER_W(COUNTER_W)
+  ) u_core (
+    .clk,
+    .rst_n,
+    .local_in_valid_i(core_local_in_valid),
+    .local_in_ready_o(core_local_in_ready),
+    .local_in_flit_i(core_local_in_flit),
+    .local_in_vc_i(core_local_in_vc),
+    .local_out_valid_o(core_local_out_valid),
+    .local_out_ready_i(core_local_out_ready),
+    .local_out_flit_o(core_local_out_flit),
+    .local_out_vc_o(core_local_out_vc),
+    .protocol_error_o,
+    .flits_received_o,
+    .flits_sent_o,
+    .blocked_empty_o,
+    .blocked_backpressure_o,
+    .packets_ejected_o
+  );
 endmodule

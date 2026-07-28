@@ -3,7 +3,10 @@ rtl/noc_link_if.sv
 rtl/fifo.sv
 rtl/rr_arbiter.sv
 rtl/route_compute_torus.sv
+rtl/router_vc_in.sv
 rtl/router_port_in.sv
 rtl/router_crossbar.sv
+rtl/router_core.sv
 rtl/router.sv
+rtl/torus4x4_core.sv
 rtl/torus4x4.sv

@@ -4,8 +4,9 @@ module router #(
   parameter int X_COORD = 0,
   parameter int Y_COORD = 0,
   parameter int FLIT_W  = noc_pkg::NOC_FLIT_W,
-  parameter int VC_W    = noc_pkg::NOC_VC_W,
-  parameter int FIFO_D  = 4
+  parameter int VC_W      = noc_pkg::NOC_VC_W,
+  parameter int FIFO_D    = 4,
+  parameter int COUNTER_W = 32
 ) (
   input logic clk,
   input logic rst_n,
@@ -21,89 +22,125 @@ module router #(
   noc_link_if.sink   local_i,
   noc_link_if.source local_o,
 
-  output logic [31:0] flits_received_o [noc_pkg::NOC_NUM_PORTS],
-  output logic [31:0] flits_sent_o [noc_pkg::NOC_NUM_PORTS],
-  output logic [31:0] packets_ejected_o
+  output logic [noc_pkg::NOC_NUM_VCS-1:0] protocol_error_o
+      [noc_pkg::NOC_NUM_PORTS],
+  output logic [COUNTER_W-1:0] flits_received_o [noc_pkg::NOC_NUM_PORTS],
+  output logic [COUNTER_W-1:0] flits_sent_o [noc_pkg::NOC_NUM_PORTS],
+  output logic [COUNTER_W-1:0] blocked_empty_o [noc_pkg::NOC_NUM_PORTS],
+  output logic [COUNTER_W-1:0] blocked_backpressure_o [noc_pkg::NOC_NUM_PORTS],
+  output logic [COUNTER_W-1:0] packets_ejected_o
 );
-  localparam logic [noc_pkg::NOC_COORD_W-1:0] CUR_X = X_COORD[noc_pkg::NOC_COORD_W-1:0];
-  localparam logic [noc_pkg::NOC_COORD_W-1:0] CUR_Y = Y_COORD[noc_pkg::NOC_COORD_W-1:0];
+  localparam int NUM_PORTS = noc_pkg::NOC_NUM_PORTS;
+  localparam int NUM_VCS = noc_pkg::NOC_NUM_VCS;
 
-  noc_link_if #(.FLIT_W(FLIT_W), .VC_W(VC_W)) in_links [noc_pkg::NOC_NUM_PORTS] ();
-  noc_link_if #(.FLIT_W(FLIT_W), .VC_W(VC_W)) out_links [noc_pkg::NOC_NUM_PORTS] ();
+  logic [NUM_PORTS-1:0]        core_in_valid;
+  logic [NUM_PORTS-1:0]        core_in_ready;
+  logic [NUM_PORTS*FLIT_W-1:0] core_in_flit;
+  logic [NUM_PORTS*VC_W-1:0]   core_in_vc;
+  logic [NUM_PORTS*NUM_VCS-1:0] core_out_vc_ready;
+  logic [NUM_PORTS-1:0]        core_out_valid;
+  logic [NUM_PORTS-1:0]        core_out_ready;
+  logic [NUM_PORTS*FLIT_W-1:0] core_out_flit;
+  logic [NUM_PORTS*VC_W-1:0]   core_out_vc;
+  logic [NUM_PORTS*NUM_VCS-1:0] protocol_error_flat;
+  logic [NUM_PORTS*COUNTER_W-1:0] flits_received_flat;
+  logic [NUM_PORTS*COUNTER_W-1:0] flits_sent_flat;
+  logic [NUM_PORTS*COUNTER_W-1:0] blocked_empty_flat;
+  logic [NUM_PORTS*COUNTER_W-1:0] blocked_backpressure_flat;
 
-  assign in_links[noc_pkg::PORT_NORTH].valid = north_i.valid;
-  assign in_links[noc_pkg::PORT_NORTH].flit  = north_i.flit;
-  assign in_links[noc_pkg::PORT_NORTH].vc_id = north_i.vc_id;
-  assign north_i.ready = in_links[noc_pkg::PORT_NORTH].ready;
+  assign core_in_valid[noc_pkg::PORT_NORTH] = north_i.valid;
+  assign core_in_flit[noc_pkg::PORT_NORTH*FLIT_W +: FLIT_W] = north_i.flit;
+  assign core_in_vc[noc_pkg::PORT_NORTH*VC_W +: VC_W] = north_i.vc_id;
+  assign north_i.ready = core_in_ready[noc_pkg::PORT_NORTH];
 
-  assign in_links[noc_pkg::PORT_SOUTH].valid = south_i.valid;
-  assign in_links[noc_pkg::PORT_SOUTH].flit  = south_i.flit;
-  assign in_links[noc_pkg::PORT_SOUTH].vc_id = south_i.vc_id;
-  assign south_i.ready = in_links[noc_pkg::PORT_SOUTH].ready;
+  assign core_in_valid[noc_pkg::PORT_SOUTH] = south_i.valid;
+  assign core_in_flit[noc_pkg::PORT_SOUTH*FLIT_W +: FLIT_W] = south_i.flit;
+  assign core_in_vc[noc_pkg::PORT_SOUTH*VC_W +: VC_W] = south_i.vc_id;
+  assign south_i.ready = core_in_ready[noc_pkg::PORT_SOUTH];
 
-  assign in_links[noc_pkg::PORT_EAST].valid = east_i.valid;
-  assign in_links[noc_pkg::PORT_EAST].flit  = east_i.flit;
-  assign in_links[noc_pkg::PORT_EAST].vc_id = east_i.vc_id;
-  assign east_i.ready = in_links[noc_pkg::PORT_EAST].ready;
+  assign core_in_valid[noc_pkg::PORT_EAST] = east_i.valid;
+  assign core_in_flit[noc_pkg::PORT_EAST*FLIT_W +: FLIT_W] = east_i.flit;
+  assign core_in_vc[noc_pkg::PORT_EAST*VC_W +: VC_W] = east_i.vc_id;
+  assign east_i.ready = core_in_ready[noc_pkg::PORT_EAST];
 
-  assign in_links[noc_pkg::PORT_WEST].valid = west_i.valid;
-  assign in_links[noc_pkg::PORT_WEST].flit  = west_i.flit;
-  assign in_links[noc_pkg::PORT_WEST].vc_id = west_i.vc_id;
-  assign west_i.ready = in_links[noc_pkg::PORT_WEST].ready;
+  assign core_in_valid[noc_pkg::PORT_WEST] = west_i.valid;
+  assign core_in_flit[noc_pkg::PORT_WEST*FLIT_W +: FLIT_W] = west_i.flit;
+  assign core_in_vc[noc_pkg::PORT_WEST*VC_W +: VC_W] = west_i.vc_id;
+  assign west_i.ready = core_in_ready[noc_pkg::PORT_WEST];
 
-  assign in_links[noc_pkg::PORT_LOCAL].valid = local_i.valid;
-  assign in_links[noc_pkg::PORT_LOCAL].flit  = local_i.flit;
-  assign in_links[noc_pkg::PORT_LOCAL].vc_id = local_i.vc_id;
-  assign local_i.ready = in_links[noc_pkg::PORT_LOCAL].ready;
+  assign core_in_valid[noc_pkg::PORT_LOCAL] = local_i.valid;
+  assign core_in_flit[noc_pkg::PORT_LOCAL*FLIT_W +: FLIT_W] = local_i.flit;
+  assign core_in_vc[noc_pkg::PORT_LOCAL*VC_W +: VC_W] = local_i.vc_id;
+  assign local_i.ready = core_in_ready[noc_pkg::PORT_LOCAL];
 
-  assign north_o.valid = out_links[noc_pkg::PORT_NORTH].valid;
-  assign north_o.flit  = out_links[noc_pkg::PORT_NORTH].flit;
-  assign north_o.vc_id = out_links[noc_pkg::PORT_NORTH].vc_id;
-  assign out_links[noc_pkg::PORT_NORTH].ready = north_o.ready;
+  assign north_o.valid = core_out_valid[noc_pkg::PORT_NORTH];
+  assign north_o.flit = core_out_flit[noc_pkg::PORT_NORTH*FLIT_W +: FLIT_W];
+  assign north_o.vc_id = core_out_vc[noc_pkg::PORT_NORTH*VC_W +: VC_W];
+  assign core_out_ready[noc_pkg::PORT_NORTH] = north_o.ready;
 
-  assign south_o.valid = out_links[noc_pkg::PORT_SOUTH].valid;
-  assign south_o.flit  = out_links[noc_pkg::PORT_SOUTH].flit;
-  assign south_o.vc_id = out_links[noc_pkg::PORT_SOUTH].vc_id;
-  assign out_links[noc_pkg::PORT_SOUTH].ready = south_o.ready;
+  assign south_o.valid = core_out_valid[noc_pkg::PORT_SOUTH];
+  assign south_o.flit = core_out_flit[noc_pkg::PORT_SOUTH*FLIT_W +: FLIT_W];
+  assign south_o.vc_id = core_out_vc[noc_pkg::PORT_SOUTH*VC_W +: VC_W];
+  assign core_out_ready[noc_pkg::PORT_SOUTH] = south_o.ready;
 
-  assign east_o.valid = out_links[noc_pkg::PORT_EAST].valid;
-  assign east_o.flit  = out_links[noc_pkg::PORT_EAST].flit;
-  assign east_o.vc_id = out_links[noc_pkg::PORT_EAST].vc_id;
-  assign out_links[noc_pkg::PORT_EAST].ready = east_o.ready;
+  assign east_o.valid = core_out_valid[noc_pkg::PORT_EAST];
+  assign east_o.flit = core_out_flit[noc_pkg::PORT_EAST*FLIT_W +: FLIT_W];
+  assign east_o.vc_id = core_out_vc[noc_pkg::PORT_EAST*VC_W +: VC_W];
+  assign core_out_ready[noc_pkg::PORT_EAST] = east_o.ready;
 
-  assign west_o.valid = out_links[noc_pkg::PORT_WEST].valid;
-  assign west_o.flit  = out_links[noc_pkg::PORT_WEST].flit;
-  assign west_o.vc_id = out_links[noc_pkg::PORT_WEST].vc_id;
-  assign out_links[noc_pkg::PORT_WEST].ready = west_o.ready;
+  assign west_o.valid = core_out_valid[noc_pkg::PORT_WEST];
+  assign west_o.flit = core_out_flit[noc_pkg::PORT_WEST*FLIT_W +: FLIT_W];
+  assign west_o.vc_id = core_out_vc[noc_pkg::PORT_WEST*VC_W +: VC_W];
+  assign core_out_ready[noc_pkg::PORT_WEST] = west_o.ready;
 
-  assign local_o.valid = out_links[noc_pkg::PORT_LOCAL].valid;
-  assign local_o.flit  = out_links[noc_pkg::PORT_LOCAL].flit;
-  assign local_o.vc_id = out_links[noc_pkg::PORT_LOCAL].vc_id;
-  assign out_links[noc_pkg::PORT_LOCAL].ready = local_o.ready;
+  assign local_o.valid = core_out_valid[noc_pkg::PORT_LOCAL];
+  assign local_o.flit = core_out_flit[noc_pkg::PORT_LOCAL*FLIT_W +: FLIT_W];
+  assign local_o.vc_id = core_out_vc[noc_pkg::PORT_LOCAL*VC_W +: VC_W];
+  assign core_out_ready[noc_pkg::PORT_LOCAL] = local_o.ready;
 
-  for (genvar port = 0; port < noc_pkg::NOC_NUM_PORTS; port++) begin : gen_stub_links
-    assign in_links[port].ready = 1'b0;
-    assign out_links[port].valid = 1'b0;
-    assign out_links[port].flit = '0;
-    assign out_links[port].vc_id = '0;
+  for (genvar flow_port = 0; flow_port < NUM_PORTS; flow_port++) begin : gen_flow_ready
+    assign core_out_vc_ready[flow_port*NUM_VCS +: NUM_VCS] =
+        {NUM_VCS{core_out_ready[flow_port]}};
   end
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      packets_ejected_o <= '0;
-      for (int port = 0; port < noc_pkg::NOC_NUM_PORTS; port++) begin
-        flits_received_o[port] <= '0;
-        flits_sent_o[port] <= '0;
-      end
-    end else begin
-      // TODO: update counters when the real datapath is connected.
-      packets_ejected_o <= packets_ejected_o;
-      for (int port = 0; port < noc_pkg::NOC_NUM_PORTS; port++) begin
-        flits_received_o[port] <= flits_received_o[port];
-        flits_sent_o[port] <= flits_sent_o[port];
-      end
-    end
-  end
+  router_core #(
+    .X_COORD(X_COORD),
+    .Y_COORD(Y_COORD),
+    .FLIT_W(FLIT_W),
+    .VC_W(VC_W),
+    .FIFO_D(FIFO_D),
+    .COUNTER_W(COUNTER_W)
+  ) u_core (
+    .clk,
+    .rst_n,
+    .in_valid_i(core_in_valid),
+    .in_ready_o(core_in_ready),
+    .in_flit_i(core_in_flit),
+    .in_vc_i(core_in_vc),
+    .in_vc_ready_o(),
+    .out_valid_o(core_out_valid),
+    .out_ready_i(core_out_ready),
+    .out_vc_ready_i(core_out_vc_ready),
+    .out_flit_o(core_out_flit),
+    .out_vc_o(core_out_vc),
+    .protocol_error_o(protocol_error_flat),
+    .flits_received_o(flits_received_flat),
+    .flits_sent_o(flits_sent_flat),
+    .blocked_empty_o(blocked_empty_flat),
+    .blocked_backpressure_o(blocked_backpressure_flat),
+    .packets_ejected_o
+  );
 
-  // TODO: instantiate input port blocks, route computation, arbiters, and crossbar.
+  for (genvar counter_port = 0; counter_port < NUM_PORTS; counter_port++) begin : gen_counters
+    assign protocol_error_o[counter_port] =
+        protocol_error_flat[counter_port*NUM_VCS +: NUM_VCS];
+    assign flits_received_o[counter_port] =
+        flits_received_flat[counter_port*COUNTER_W +: COUNTER_W];
+    assign flits_sent_o[counter_port] =
+        flits_sent_flat[counter_port*COUNTER_W +: COUNTER_W];
+    assign blocked_empty_o[counter_port] =
+        blocked_empty_flat[counter_port*COUNTER_W +: COUNTER_W];
+    assign blocked_backpressure_o[counter_port] =
+        blocked_backpressure_flat[counter_port*COUNTER_W +: COUNTER_W];
+  end
 endmodule
